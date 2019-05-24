@@ -1,0 +1,132 @@
+#!/usr/bin/env ruby
+
+require "rubygems"
+require "bundler/setup"
+require "colorize"
+
+input = ARGF.read
+
+col_sep = "\t"
+#col_sep = ","
+
+show_blank_properties_of_new_records = false
+
+# diff --git a/a.csv b/a.csv
+# index 9e884eb..375f18d 100644
+# --- a/a.csv
+# +++ b/a.csv
+# @@ -1,3 +1,3 @@
+#  Id,Name,Prop1,Prop2
+# -1,Foobar,0,1
+# -2,Barfoo,2333,4133
+# +1,Foobar,1,100
+# +3,Fuuuuu,123123,3123443
+
+class CSVDiff
+  attr_accessor :headers
+  attr_accessor :filename
+  attr_accessor :records
+
+  def initialize
+    @headers = []
+    @filename = ""
+    @records = {}
+  end
+
+  def identity_property
+    @identity_property || @headers.first
+  end
+end
+
+class Record
+  attr_accessor :id
+  attr_accessor :properties_a
+  attr_accessor :properties_b
+
+  def initialize(id)
+    @id = id
+    @properties_a = {}
+    @properties_b = {}
+  end
+
+  def new?
+    @properties_a.empty?
+  end
+
+  def deleted?
+    @properties_b.empty?
+  end
+end
+
+diffs = []
+
+csvdiff = nil
+
+require "csv"
+
+input.each_line do |line|
+  if line[0..3] == "diff"
+    diffs << csvdiff if csvdiff
+    csvdiff = CSVDiff.new
+    matches = line.match(/ a\/(.*) b\//)
+    csvdiff.filename = matches.captures.first
+    csv = CSV.new(File.read(csvdiff.filename, encoding: "iso-8859-1"), quote_char: nil, col_sep: col_sep, headers: true)
+    begin
+      csv.read
+    rescue CSV::MalformedCSVError => error
+      puts "Unable to parse '#{csvdiff.filename}' (file exists: #{File.exist?(csvdiff.filename)})"
+      fail error
+    end
+    csvdiff.headers = csv.headers
+  elsif line[0..2] == "---"
+    # Ignore
+  elsif line[0..0] == "-"
+    row = line[1..-1]
+    csv = CSV.new(row, quote_char: nil, col_sep: col_sep, headers: csvdiff.headers)
+    properties = csv.read.first.to_h
+    record = csvdiff.records[properties[csvdiff.identity_property]]
+    record ||= Record.new(properties[csvdiff.identity_property])
+    record.properties_a = properties
+    csvdiff.records[record.id] = record
+  elsif line[0..2] == "+++"
+    # Ignore
+  elsif line[0..0] == "+"
+    row = line[1..-1]
+    csv = CSV.new(row, quote_char: nil, col_sep: col_sep, headers: csvdiff.headers)
+    properties = csv.read.first.to_h
+    record = csvdiff.records[properties[csvdiff.identity_property]]
+    record ||= Record.new(properties[csvdiff.identity_property])
+    record.properties_b = properties
+    csvdiff.records[record.id] = record
+  end
+end
+
+diffs << csvdiff
+
+diffs.each do |csvdiff|
+  puts "Filename: #{csvdiff.filename}"
+  puts "Changed records count: #{csvdiff.records.size}"
+  puts "-"*80
+  csvdiff.records.values.each do |record|
+    if record.new?
+      puts "New record: ##{record.id}".colorize(:green)
+      csvdiff.headers.each do |header|
+        if show_blank_properties_of_new_records || record.properties_b[header]
+          puts "    #{header}: '#{record.properties_b[header]}'".colorize(:green)
+        end
+      end
+    elsif record.deleted?
+      puts "Record deleted: ##{record.id}".colorize(:red)
+      csvdiff.headers.each do |header|
+        puts "    #{header}: '#{record.properties_a[header]}'".colorize(:red)
+      end
+    else
+      puts "Record changed: ##{record.id}".colorize(:green)
+      csvdiff.headers.each do |header|
+        if record.properties_a[header] != record.properties_b[header]
+          puts "    #{header.colorize(:green)}: '#{record.properties_a[header].to_s.colorize(:red)}' -> '#{record.properties_b[header].to_s.colorize(:green)}'"
+        end
+      end
+    end
+  end
+end
